@@ -284,12 +284,19 @@
                 const tbody = document.getElementById('leaderboard-list');
                 tbody.innerHTML = '';
 
+                // Load cached nickname if current one is empty (initial load)
+                const currentName = nickname || localStorage.getItem('freecell_nickname');
+
                 top10.forEach((s, idx) => {
+                    // Highlight if matches current user nickname
+                    const isMe = currentName && s.nickname === currentName;
+                    const rowClass = isMe ? "bg-yellow-100 font-bold border-b border-yellow-200 text-yellow-900" : "border-b border-gray-100 last:border-0 hover:bg-gray-100";
+                    
                     const row = `
-                        <tr class="border-b border-gray-100 last:border-0 hover:bg-gray-100">
+                        <tr class="${rowClass}">
                             <td class="py-2 pl-2 text-gray-500 font-mono">${idx + 1}</td>
                             <td class="py-2 font-medium text-gray-800 truncate max-w-[100px]">${s.nickname}</td>
-                            <td class="py-2 text-right pr-2 text-green-700 font-bold">${s.score}</td>
+                            <td class="py-2 text-right pr-2 font-bold ${isMe ? 'text-yellow-700' : 'text-green-700'}">${s.score}</td>
                         </tr>
                     `;
                     tbody.innerHTML += row;
@@ -313,8 +320,10 @@
                     uid: user.uid,
                     createdAt: serverTimestamp()
                 });
+                showToast("기록이 명예의 전당에 저장되었습니다!");
             } catch (e) {
                 console.error("Save score failed:", e);
+                showToast("기록 저장 실패. 인터넷을 확인하세요.");
             }
         }
         window.saveGameScore = saveScore;
@@ -328,17 +337,11 @@
         let gameState = {
             tableaus: [[], [], [], [], [], [], [], []],
             freecells: [null, null, null, null],
-            foundations: [[], [], [], []], // 0:♠, 1:♥, 2:♣, 3:♦ (Ideally mapped)
+            foundations: [[], [], [], []],
             score: 0,
             startTime: 0,
             timerInterval: null
         };
-
-        // Foundation mapping helper
-        // We'll just start empty and any suit can go to any empty foundation, 
-        // but once started, it must match.
-        // Actually, typical implementation is one pile per suit.
-        // Let's stick to current logic: finds matching pile or empty.
 
         let selectedCard = null; 
         let nickname = "";
@@ -364,6 +367,15 @@
             document.getElementById('btn-restart').addEventListener('click', restartGame);
             document.getElementById('btn-exit').addEventListener('click', exitGame);
             document.getElementById('btn-victory-home').addEventListener('click', exitGame);
+            
+            // Load nickname from storage on load
+            const savedName = localStorage.getItem('freecell_nickname');
+            if (savedName) {
+                document.getElementById('nickname-input').value = savedName;
+                // Update nickname variable so highlight works immediately if we have a match
+                nickname = savedName; 
+            }
+
             bindGameEvents();
             window.addEventListener('resize', resizeCards);
         });
@@ -419,6 +431,10 @@
             }
             errorMsg.classList.add('hidden');
             nickname = input.value.trim();
+            
+            // Save nickname for next time
+            localStorage.setItem('freecell_nickname', nickname);
+
             document.getElementById('user-display').innerText = nickname;
             document.getElementById('start-screen').classList.add('hidden');
             document.getElementById('victory-screen').classList.add('hidden');
@@ -547,6 +563,29 @@
                 selectSource(type, index, cardIndex);
             } 
             else if (selectedCard.type === type && selectedCard.index === index) {
+                // If clicked the same selected card/stack:
+                // Try to move to foundation (Simulate "Double Click" / "Smart Click")
+                let cardToMove = null;
+                if (type === 'freecell') {
+                    cardToMove = gameState.freecells[index];
+                } else if (type === 'tableau') {
+                    // Only if it's the single top card of selection
+                    if (selectedCard.cards.length === 1) {
+                        const col = gameState.tableaus[index];
+                        if (col.length > 0) cardToMove = col[col.length - 1];
+                    }
+                }
+
+                if (cardToMove && moveCardToFoundation(cardToMove, type, index)) {
+                    // Success: Clear selection and check for chains
+                    selectedCard = null;
+                    updateUI();
+                    if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
+                    autoMoveTimeout = setTimeout(checkAutoMoves, 200);
+                    return;
+                }
+
+                // If not moved, just toggle selection off
                 selectedCard = null;
                 updateUI();
             }
@@ -566,6 +605,15 @@
 
             if (!card) return;
 
+            if (moveCardToFoundation(card, type, index)) {
+                selectedCard = null;
+                updateUI();
+                if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
+                autoMoveTimeout = setTimeout(checkAutoMoves, 200);
+            }
+        };
+
+        function moveCardToFoundation(card, sourceType, sourceIndex) {
             for (let fIdx = 0; fIdx < 4; fIdx++) {
                 const pile = gameState.foundations[fIdx];
                 let canMove = false;
@@ -578,21 +626,16 @@
                 }
 
                 if (canMove) {
-                    if (type === 'freecell') gameState.freecells[index] = null;
-                    else gameState.tableaus[index].pop();
+                    if (sourceType === 'freecell') gameState.freecells[sourceIndex] = null;
+                    else gameState.tableaus[sourceIndex].pop();
                     
                     pile.push(card);
                     gameState.score += 10;
-                    selectedCard = null;
-                    updateUI();
-                    
-                    // Trigger auto-complete check
-                    if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
-                    autoMoveTimeout = setTimeout(checkAutoMoves, 200);
-                    return; 
+                    return true;
                 }
             }
-        };
+            return false;
+        }
 
         function selectSource(type, index, clickedIndex = -1) {
             if (type === 'freecell') {
@@ -650,23 +693,16 @@
             } 
             else if (destType === 'foundation') {
                 if (movingCards.length === 1) {
-                    const card = movingCards[0];
-                    const pile = gameState.foundations[destIndex];
-                    if (pile.length === 0) {
-                        if (card.value === 1) { 
-                            removeFromSource(1);
-                            pile.push(card);
-                            success = true;
-                            movePoints = 10;
-                        }
-                    } else {
-                        const top = pile[pile.length - 1];
-                        if (top.suit === card.suit && card.value === top.value + 1) {
-                            removeFromSource(1);
-                            pile.push(card);
-                            success = true;
-                            movePoints = 10;
-                        }
+                    // Try using the helper logic
+                    if (moveCardToFoundation(movingCards[0], selectedCard.type, selectedCard.index)) {
+                        success = true;
+                        // Note: moveCardToFoundation handles the state update and score
+                        // We just need to handle UI update and return
+                        selectedCard = null;
+                        updateUI();
+                        if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
+                        autoMoveTimeout = setTimeout(checkAutoMoves, 200);
+                        return;
                     }
                 }
             } 
@@ -723,97 +759,38 @@
             }
         }
 
-        // --- Auto Complete Logic ---
         function checkAutoMoves() {
             let moved = false;
-
-            // Helper to check if safe to move to foundation
-            // Safe logic: Can move card of rank R if opposite color foundations have rank >= R-1
-            // (Standard "Safe Autoplay" rule to avoid moving cards needed for stacking)
-            const getMinFoundation = (color) => {
-                let minVal = 14;
-                gameState.foundations.forEach(pile => {
-                    const top = pile.length > 0 ? pile[pile.length - 1] : { value: 0, color: null };
-                    // If empty pile, value is 0. 
-                    // However, we need to check Color. 
-                    // FreeCell foundations are usually distinct suits.
-                    // If we assume standard play, we check specific suits. 
-                    // Simplified: Check all piles. If pile matches color, count it.
-                    // But actually, we need to know which foundation corresponds to which suit?
-                    // In this implementation, foundations are generic slots until first card.
-                    // But to be safe, let's just check the "Lowest rank of opposite color in foundation".
-                    
-                    // Actually, simpler logic for V1:
-                    // If card can go to foundation, AND (Card.Value <= Min_Opposite_Color_Foundation_Value + 2)
-                    // Wait, standard rule: Auto-move if (Card.Value <= Min(All_Foundations) + 2) is risky.
-                    // Safe rule: Move Red 5 if Black foundations are at least 4.
-                });
-                // Let's implement strict safe rule:
-                // Find min rank of Black foundations, min rank of Red foundations.
-                let minBlack = 14, minRed = 14;
-                // Count found suits to handle empty slots correctly (empty = 0)
-                let blackCount = 0, redCount = 0;
-                
-                gameState.foundations.forEach(pile => {
-                    if (pile.length > 0) {
-                        const top = pile[pile.length - 1];
-                        if (top.color === 'black') {
-                            if (top.value < minBlack) minBlack = top.value;
-                            blackCount++;
-                        } else {
-                            if (top.value < minRed) minRed = top.value;
-                            redCount++;
-                        }
-                    }
-                });
-                
-                // If a color has less than 2 piles started (in standard 4-suit game), effective min is 0
-                // But our foundations are dynamic.
-                // Let's assume empty foundation = 0.
-                // We have 4 foundation slots.
-                // If we treat unassigned slots as 0 for both? No.
-                // Just use: Rank R is safe if opposite color foundations are >= R - 1.
-                // We need to know specific suits?
-                // Let's iterate all potential source cards and check.
-                
-                // Correction: We just calculate min rank for Red and Black from existing foundations.
-                // If a suit hasn't started, its foundation rank is 0.
-                // So if we have 2 Black suits, we need 2 Black foundation values.
-                // Since we don't strictly bind slots to suits in this code (dynamic),
-                // we iterate the 4 slots. If a slot is empty, it counts as 0 for ALL missing suits.
-                // This is safe.
-                
-                let blackRanks = [], redRanks = [];
-                gameState.foundations.forEach(pile => {
-                    if (pile.length > 0) {
-                        const top = pile[pile.length - 1];
-                        if (top.color === 'black') blackRanks.push(top.value);
-                        else redRanks.push(top.value);
-                    }
-                });
-                // Fill with 0s until 2 each
-                while (blackRanks.length < 2) blackRanks.push(0);
-                while (redRanks.length < 2) redRanks.push(0);
-                
-                return { 
-                    minBlack: Math.min(...blackRanks), 
-                    minRed: Math.min(...redRanks) 
-                };
+            
+            // Helper: Find min value of opposite color foundations
+            let minBlack = 14, minRed = 14;
+            let blackRanks = [], redRanks = [];
+            gameState.foundations.forEach(pile => {
+                if (pile.length > 0) {
+                    const top = pile[pile.length - 1];
+                    if (top.color === 'black') blackRanks.push(top.value);
+                    else redRanks.push(top.value);
+                }
+            });
+            while (blackRanks.length < 2) blackRanks.push(0);
+            while (redRanks.length < 2) redRanks.push(0);
+            
+            const limits = { 
+                minBlack: Math.min(...blackRanks), 
+                minRed: Math.min(...redRanks) 
             };
-
-            const limits = getMinFoundation();
 
             // Check Freecells
             for (let i = 0; i < 4; i++) {
                 if (gameState.freecells[i]) {
                     if (tryAutoMove(gameState.freecells[i], 'freecell', i, limits)) {
                         moved = true;
-                        break; // Move one at a time for animation
+                        break; 
                     }
                 }
             }
 
-            // Check Tableaus (if not moved yet)
+            // Check Tableaus
             if (!moved) {
                 for (let i = 0; i < 8; i++) {
                     const col = gameState.tableaus[i];
@@ -829,19 +806,13 @@
 
             if (moved) {
                 updateUI();
-                autoMoveToFoundation = setTimeout(checkAutoMoves, 150); // Fast chain
+                autoMoveToFoundation = setTimeout(checkAutoMoves, 150); 
             }
         }
 
         function tryAutoMove(card, sourceType, sourceIndex, limits) {
-            // Check if card is safe
-            // Red card safe if limits.minBlack >= card.value - 1
-            // Black card safe if limits.minRed >= card.value - 1
-            // Value 1 (Ace) is always safe (0 >= 0)
-            // Value 2 needs opp >= 1.
-            
             let isSafe = false;
-            if (card.value <= 2) isSafe = true; // Always move Ace and 2 (standard heuristic)
+            if (card.value <= 2) isSafe = true; 
             else {
                 if (card.color === 'red') {
                     if (limits.minBlack >= card.value - 1) isSafe = true;
@@ -851,30 +822,7 @@
             }
 
             if (!isSafe) return false;
-
-            // Try to find target foundation
-            for (let fIdx = 0; fIdx < 4; fIdx++) {
-                const pile = gameState.foundations[fIdx];
-                let canMove = false;
-                
-                if (pile.length === 0) {
-                    if (card.value === 1) canMove = true;
-                } else {
-                    const top = pile[pile.length - 1];
-                    if (top.suit === card.suit && card.value === top.value + 1) canMove = true;
-                }
-
-                if (canMove) {
-                    // Execute Move
-                    if (sourceType === 'freecell') gameState.freecells[sourceIndex] = null;
-                    else gameState.tableaus[sourceIndex].pop();
-                    
-                    pile.push(card);
-                    gameState.score += 10;
-                    return true;
-                }
-            }
-            return false;
+            return moveCardToFoundation(card, sourceType, sourceIndex);
         }
 
         function checkWin() {
