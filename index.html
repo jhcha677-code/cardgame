@@ -328,14 +328,21 @@
         let gameState = {
             tableaus: [[], [], [], [], [], [], [], []],
             freecells: [null, null, null, null],
-            foundations: [[], [], [], []],
+            foundations: [[], [], [], []], // 0:♠, 1:♥, 2:♣, 3:♦ (Ideally mapped)
             score: 0,
             startTime: 0,
             timerInterval: null
         };
 
+        // Foundation mapping helper
+        // We'll just start empty and any suit can go to any empty foundation, 
+        // but once started, it must match.
+        // Actually, typical implementation is one pile per suit.
+        // Let's stick to current logic: finds matching pile or empty.
+
         let selectedCard = null; 
         let nickname = "";
+        let autoMoveTimeout = null;
 
         // Toast functionality
         function showToast(message) {
@@ -379,16 +386,16 @@
             element.addEventListener('dblclick', (e) => handleDoubleClick(type, index));
             
             element.addEventListener('touchstart', (e) => {
-                startX = e.changedTouches[0].clientX; // Fixed: Use clientX instead of pageX
+                startX = e.changedTouches[0].clientX;
                 startY = e.changedTouches[0].clientY;
             }, { passive: false });
 
             element.addEventListener('touchend', (e) => {
-                const endX = e.changedTouches[0].clientX; // Fixed: Use clientX
+                const endX = e.changedTouches[0].clientX;
                 const endY = e.changedTouches[0].clientY;
                 
                 if (Math.abs(endX - startX) < 10 && Math.abs(endY - startY) < 10) {
-                    e.preventDefault(); // Prevent ghost clicks
+                    e.preventDefault();
                     const currentTime = new Date().getTime();
                     if (currentTime - lastTap < 300) {
                         handleDoubleClick(type, index);
@@ -425,6 +432,7 @@
             gameState.score = 0;
             gameState.startTime = Date.now();
             selectedCard = null;
+            if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
 
             let deck = [];
             SUITS.forEach(suit => {
@@ -450,6 +458,7 @@
 
         function exitGame() {
             stopTimer();
+            if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
             document.getElementById('start-screen').classList.remove('hidden');
             document.getElementById('victory-screen').classList.add('hidden');
         }
@@ -511,7 +520,7 @@
                     
                     cardInner.style.top = `${cardIndex * offset}px`; 
                     cardInner.style.zIndex = cardIndex;
-                    cardInner.dataset.index = cardIndex; // Store index for specific card clicks
+                    cardInner.dataset.index = cardIndex;
                     
                     el.appendChild(cardInner);
                 });
@@ -526,7 +535,6 @@
             if (event && (event.type === 'click' || event.type === 'touchend')) {
                 let target = event.target;
                 if (event.changedTouches) {
-                    // Accurately find element under finger
                     target = document.elementFromPoint(event.changedTouches[0].clientX, event.changedTouches[0].clientY);
                 }
                 const cardEl = target ? target.closest('.card') : null;
@@ -577,6 +585,10 @@
                     gameState.score += 10;
                     selectedCard = null;
                     updateUI();
+                    
+                    // Trigger auto-complete check
+                    if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
+                    autoMoveTimeout = setTimeout(checkAutoMoves, 200);
                     return; 
                 }
             }
@@ -589,7 +601,6 @@
             } else if (type === 'tableau') {
                 const col = gameState.tableaus[index];
                 if (col.length > 0) {
-                    // Logic: Find the longest valid stack at the bottom
                     let validStartIdx = col.length - 1;
                     for (let i = col.length - 2; i >= 0; i--) {
                         const current = col[i];
@@ -603,14 +614,11 @@
                         }
                     }
 
-                    // Determine Selection Start
                     let selectFrom = validStartIdx;
-                    
                     if (clickedIndex !== -1) {
                         if (clickedIndex >= validStartIdx) {
-                            selectFrom = clickedIndex; // Allow selecting sub-stack
+                            selectFrom = clickedIndex; 
                         } 
-                        // If clicked invalid area, default to longest valid stack
                     }
 
                     const stack = col.slice(selectFrom);
@@ -695,6 +703,10 @@
                 gameState.score += movePoints;
                 selectedCard = null;
                 updateUI();
+                
+                // Trigger auto-complete check
+                if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
+                autoMoveTimeout = setTimeout(checkAutoMoves, 200);
             } else {
                 selectedCard = null;
                 updateUI();
@@ -709,6 +721,160 @@
                     gameState.tableaus[selectedCard.index].pop();
                 }
             }
+        }
+
+        // --- Auto Complete Logic ---
+        function checkAutoMoves() {
+            let moved = false;
+
+            // Helper to check if safe to move to foundation
+            // Safe logic: Can move card of rank R if opposite color foundations have rank >= R-1
+            // (Standard "Safe Autoplay" rule to avoid moving cards needed for stacking)
+            const getMinFoundation = (color) => {
+                let minVal = 14;
+                gameState.foundations.forEach(pile => {
+                    const top = pile.length > 0 ? pile[pile.length - 1] : { value: 0, color: null };
+                    // If empty pile, value is 0. 
+                    // However, we need to check Color. 
+                    // FreeCell foundations are usually distinct suits.
+                    // If we assume standard play, we check specific suits. 
+                    // Simplified: Check all piles. If pile matches color, count it.
+                    // But actually, we need to know which foundation corresponds to which suit?
+                    // In this implementation, foundations are generic slots until first card.
+                    // But to be safe, let's just check the "Lowest rank of opposite color in foundation".
+                    
+                    // Actually, simpler logic for V1:
+                    // If card can go to foundation, AND (Card.Value <= Min_Opposite_Color_Foundation_Value + 2)
+                    // Wait, standard rule: Auto-move if (Card.Value <= Min(All_Foundations) + 2) is risky.
+                    // Safe rule: Move Red 5 if Black foundations are at least 4.
+                });
+                // Let's implement strict safe rule:
+                // Find min rank of Black foundations, min rank of Red foundations.
+                let minBlack = 14, minRed = 14;
+                // Count found suits to handle empty slots correctly (empty = 0)
+                let blackCount = 0, redCount = 0;
+                
+                gameState.foundations.forEach(pile => {
+                    if (pile.length > 0) {
+                        const top = pile[pile.length - 1];
+                        if (top.color === 'black') {
+                            if (top.value < minBlack) minBlack = top.value;
+                            blackCount++;
+                        } else {
+                            if (top.value < minRed) minRed = top.value;
+                            redCount++;
+                        }
+                    }
+                });
+                
+                // If a color has less than 2 piles started (in standard 4-suit game), effective min is 0
+                // But our foundations are dynamic.
+                // Let's assume empty foundation = 0.
+                // We have 4 foundation slots.
+                // If we treat unassigned slots as 0 for both? No.
+                // Just use: Rank R is safe if opposite color foundations are >= R - 1.
+                // We need to know specific suits?
+                // Let's iterate all potential source cards and check.
+                
+                // Correction: We just calculate min rank for Red and Black from existing foundations.
+                // If a suit hasn't started, its foundation rank is 0.
+                // So if we have 2 Black suits, we need 2 Black foundation values.
+                // Since we don't strictly bind slots to suits in this code (dynamic),
+                // we iterate the 4 slots. If a slot is empty, it counts as 0 for ALL missing suits.
+                // This is safe.
+                
+                let blackRanks = [], redRanks = [];
+                gameState.foundations.forEach(pile => {
+                    if (pile.length > 0) {
+                        const top = pile[pile.length - 1];
+                        if (top.color === 'black') blackRanks.push(top.value);
+                        else redRanks.push(top.value);
+                    }
+                });
+                // Fill with 0s until 2 each
+                while (blackRanks.length < 2) blackRanks.push(0);
+                while (redRanks.length < 2) redRanks.push(0);
+                
+                return { 
+                    minBlack: Math.min(...blackRanks), 
+                    minRed: Math.min(...redRanks) 
+                };
+            };
+
+            const limits = getMinFoundation();
+
+            // Check Freecells
+            for (let i = 0; i < 4; i++) {
+                if (gameState.freecells[i]) {
+                    if (tryAutoMove(gameState.freecells[i], 'freecell', i, limits)) {
+                        moved = true;
+                        break; // Move one at a time for animation
+                    }
+                }
+            }
+
+            // Check Tableaus (if not moved yet)
+            if (!moved) {
+                for (let i = 0; i < 8; i++) {
+                    const col = gameState.tableaus[i];
+                    if (col.length > 0) {
+                        const card = col[col.length - 1];
+                        if (tryAutoMove(card, 'tableau', i, limits)) {
+                            moved = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (moved) {
+                updateUI();
+                autoMoveToFoundation = setTimeout(checkAutoMoves, 150); // Fast chain
+            }
+        }
+
+        function tryAutoMove(card, sourceType, sourceIndex, limits) {
+            // Check if card is safe
+            // Red card safe if limits.minBlack >= card.value - 1
+            // Black card safe if limits.minRed >= card.value - 1
+            // Value 1 (Ace) is always safe (0 >= 0)
+            // Value 2 needs opp >= 1.
+            
+            let isSafe = false;
+            if (card.value <= 2) isSafe = true; // Always move Ace and 2 (standard heuristic)
+            else {
+                if (card.color === 'red') {
+                    if (limits.minBlack >= card.value - 1) isSafe = true;
+                } else {
+                    if (limits.minRed >= card.value - 1) isSafe = true;
+                }
+            }
+
+            if (!isSafe) return false;
+
+            // Try to find target foundation
+            for (let fIdx = 0; fIdx < 4; fIdx++) {
+                const pile = gameState.foundations[fIdx];
+                let canMove = false;
+                
+                if (pile.length === 0) {
+                    if (card.value === 1) canMove = true;
+                } else {
+                    const top = pile[pile.length - 1];
+                    if (top.suit === card.suit && card.value === top.value + 1) canMove = true;
+                }
+
+                if (canMove) {
+                    // Execute Move
+                    if (sourceType === 'freecell') gameState.freecells[sourceIndex] = null;
+                    else gameState.tableaus[sourceIndex].pop();
+                    
+                    pile.push(card);
+                    gameState.score += 10;
+                    return true;
+                }
+            }
+            return false;
         }
 
         function checkWin() {
