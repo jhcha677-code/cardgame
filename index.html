@@ -242,6 +242,7 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // 사용자 제공 설정을 백업용으로 유지
         const userConfig = {
             apiKey: "AIzaSyABtG2uYP6iXpXOphVPTY_roUbHMzBDGek",
             authDomain: "cardgame-8bae4.firebaseapp.com",
@@ -252,11 +253,16 @@
         };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : userConfig;
+        
+        // 환경 변수 설정 우선 사용, 없으면 사용자 설정 사용 (Auth 오류 방지)
+        const firebaseConfig = (typeof __firebase_config !== 'undefined' && __firebase_config) 
+            ? JSON.parse(__firebase_config) 
+            : userConfig;
         
         let db, auth, user;
 
         try {
+            console.log("Initializing Firebase...");
             const app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
@@ -270,6 +276,8 @@
                     }
                 } catch (e) {
                     console.error("Auth initialization failed:", e);
+                    // UI에 에러 알림 (선택적)
+                    if (window.showToast) window.showToast("인증 서버 연결 실패: 콘솔 설정을 확인하세요.");
                 }
             };
             initAuth();
@@ -279,11 +287,14 @@
                 if(user) {
                     console.log("Firebase Connected. UID:", user.uid);
                     loadLeaderboard();
+                } else {
+                    console.log("User signed out");
                 }
             });
         } catch (e) {
             console.error("Firebase init failed:", e);
-            document.querySelector("#leaderboard-list").innerHTML = '<tr><td colspan="3" class="text-center py-4">서비스 연결 불가</td></tr>';
+            const listEl = document.querySelector("#leaderboard-list");
+            if(listEl) listEl.innerHTML = '<tr><td colspan="3" class="text-center py-4">서비스 연결 불가</td></tr>';
         }
 
         function loadLeaderboard() {
