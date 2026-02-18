@@ -444,19 +444,15 @@
         async function saveScore(nickname, score, timeStr, duration) {
             console.log("Saving score to:", LEADERBOARD_ID);
             
-            // 1. Check LocalStorage Cache first (Instant Feedback)
-            // Note: With multi-nickname support, simple local cache check might be tricky per nickname.
-            // But checking absolute best is still safe to avoid unnecessary writes for worse scores.
+            // 1. Check LocalStorage Cache first (Instant Feedback for device-local best)
             const cachedBest = localStorage.getItem('freecell_best_duration');
+            // This is a loose check. Strictly we should check per-nickname but this prevents obviously bad saves.
             if (cachedBest) {
-                // If the new score is worse than my global best on this machine, 
-                // we might still want to save it IF it's a new nickname that doesn't have a record yet.
-                // So we skip the simple local check to ensure different nicknames get saved.
-                // const bestDuration = parseInt(cachedBest);
-                // if (bestDuration <= duration) { ... } 
+                // We assume if you are much slower than your own device best, it's probably not a record for this nickname either
+                // unless it's a new nickname. We'll be lenient here and skip this check to be safe for multi-user scenarios.
             }
 
-            // 2. Optimistically save to LocalStorage (Global best for device)
+            // Update local best immediately for next time
             const currentBest = localStorage.getItem('freecell_best_duration');
             if (!currentBest || duration < parseInt(currentBest)) {
                 localStorage.setItem('freecell_best_duration', duration);
@@ -476,28 +472,34 @@
             }
 
             try {
-                // 1. Create a composite key: UID + Nickname to allow multiple personas per user
-                const safeNickname = nickname.replace(/[\/\.]/g, '_'); // Sanitize slightly
+                // 1. Create a composite key: UID + Nickname
+                const safeNickname = nickname.replace(/[\/\.]/g, '_'); 
                 const docId = `${auth.currentUser.uid}_${safeNickname}`;
                 
                 const userDocRef = doc(db, 'artifacts', LEADERBOARD_ID, 'public', 'data', COLLECTION_NAME, docId);
                 
                 // 2. Check existing record for THIS specific nickname
-                const docSnap = await getDoc(userDocRef);
+                // WRAPPED IN TRY-CATCH to handle "Client Offline" error gracefully
                 let isBetter = true;
-
-                if (docSnap.exists()) {
-                    const oldData = docSnap.data();
-                    if (oldData.duration <= duration) {
-                        isBetter = false; // Existing time for this nickname is faster
+                try {
+                    const docSnap = await getDoc(userDocRef);
+                    if (docSnap.exists()) {
+                        const oldData = docSnap.data();
+                        if (oldData.duration <= duration) {
+                            isBetter = false; // Existing time is faster
+                        }
                     }
+                } catch (readError) {
+                    console.warn("Offline or read error: Skipping server-side check and proceeding to write.", readError);
+                    // If we can't check server (offline), we optimistically assume it's a record 
+                    // and let Firestore's sync handle the write queue.
                 }
 
                 if (!isBetter) {
                     return { success: false, message: "아쉽네요! '" + nickname + "'의 기존 기록이 더 빠릅니다." };
                 }
 
-                // 3. Save (Overwrite/Create)
+                // 3. Save (Overwrite/Create) - Works offline (queues the write)
                 await setDoc(userDocRef, {
                     nickname: nickname,
                     score: score,
