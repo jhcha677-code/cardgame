@@ -445,16 +445,22 @@
             console.log("Saving score to:", LEADERBOARD_ID);
             
             // 1. Check LocalStorage Cache first (Instant Feedback)
+            // Note: With multi-nickname support, simple local cache check might be tricky per nickname.
+            // But checking absolute best is still safe to avoid unnecessary writes for worse scores.
             const cachedBest = localStorage.getItem('freecell_best_duration');
             if (cachedBest) {
-                const bestDuration = parseInt(cachedBest);
-                if (bestDuration <= duration) {
-                     return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
-                }
+                // If the new score is worse than my global best on this machine, 
+                // we might still want to save it IF it's a new nickname that doesn't have a record yet.
+                // So we skip the simple local check to ensure different nicknames get saved.
+                // const bestDuration = parseInt(cachedBest);
+                // if (bestDuration <= duration) { ... } 
             }
 
-            // 2. Optimistically save to LocalStorage
-            localStorage.setItem('freecell_best_duration', duration);
+            // 2. Optimistically save to LocalStorage (Global best for device)
+            const currentBest = localStorage.getItem('freecell_best_duration');
+            if (!currentBest || duration < parseInt(currentBest)) {
+                localStorage.setItem('freecell_best_duration', duration);
+            }
 
             if (!db) {
                 return { success: false, message: "데이터베이스 연결 실패" };
@@ -470,20 +476,25 @@
             }
 
             try {
-                // 1. Reference the specific user document (Unique per UID)
-                const userDocRef = doc(db, 'artifacts', LEADERBOARD_ID, 'public', 'data', COLLECTION_NAME, auth.currentUser.uid);
+                // 1. Create a composite key: UID + Nickname to allow multiple personas per user
+                const safeNickname = nickname.replace(/[\/\.]/g, '_'); // Sanitize slightly
+                const docId = `${auth.currentUser.uid}_${safeNickname}`;
                 
-                // 2. Check existing record from server (optional, handled by optimistic check mostly)
-                try {
-                    const docSnap = await getDoc(userDocRef);
-                    if (docSnap.exists()) {
-                        const oldData = docSnap.data();
-                        if (oldData.duration <= duration) {
-                            return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
-                        }
+                const userDocRef = doc(db, 'artifacts', LEADERBOARD_ID, 'public', 'data', COLLECTION_NAME, docId);
+                
+                // 2. Check existing record for THIS specific nickname
+                const docSnap = await getDoc(userDocRef);
+                let isBetter = true;
+
+                if (docSnap.exists()) {
+                    const oldData = docSnap.data();
+                    if (oldData.duration <= duration) {
+                        isBetter = false; // Existing time for this nickname is faster
                     }
-                } catch (readError) {
-                    console.warn("Could not read previous score, overwriting...", readError);
+                }
+
+                if (!isBetter) {
+                    return { success: false, message: "아쉽네요! '" + nickname + "'의 기존 기록이 더 빠릅니다." };
                 }
 
                 // 3. Save (Overwrite/Create)
