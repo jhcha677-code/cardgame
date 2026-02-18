@@ -93,6 +93,10 @@
             100% { transform: translateY(0px); }
         }
         .animate-float { animation: float 3s ease-in-out infinite; }
+        
+        /* Spin Animation for refresh */
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
     <script>
         // Global prevention of native scroll/zoom
@@ -155,10 +159,15 @@
                 </button>
 
                 <div class="border-t border-gray-200 pt-4">
-                    <h3 class="text-lg font-bold text-gray-700 mb-3 flex items-center">
-                        <i data-lucide="trophy" class="w-5 h-5 mr-2 text-yellow-500"></i> 명예의 전당
-                    </h3>
-                    <div class="bg-gray-50 rounded h-48 overflow-y-auto custom-scrollbar p-2">
+                    <div class="flex justify-between items-center mb-3">
+                        <h3 class="text-lg font-bold text-gray-700 flex items-center">
+                            <i data-lucide="trophy" class="w-5 h-5 mr-2 text-yellow-500"></i> 명예의 전당
+                        </h3>
+                        <button id="btn-refresh-rank" class="text-gray-400 hover:text-green-600 p-1 rounded-full hover:bg-gray-100 transition" title="새로고침">
+                            <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                    <div class="bg-gray-50 rounded h-48 overflow-y-auto custom-scrollbar p-2 relative">
                         <table class="w-full text-sm">
                             <thead class="text-gray-500 border-b">
                                 <tr>
@@ -168,7 +177,7 @@
                                 </tr>
                             </thead>
                             <tbody id="leaderboard-list">
-                                <tr><td colspan="3" class="text-center py-4 text-gray-400">로딩 중...</td></tr>
+                                <tr><td colspan="3" class="text-center py-4 text-gray-400">데이터 연결 중...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -241,7 +250,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, setDoc, getDoc, doc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const userConfig = {
             apiKey: "AIzaSyABtG2uYP6iXpXOphVPTY_roUbHMzBDGek",
@@ -252,17 +261,16 @@
             appId: "1:931605513570:web:8f58953994bda3fdcad83b"
         };
         
-        // 중요: appId를 고정된 값으로 변경하여 항상 같은 컬렉션을 바라보게 함
-        // 기존에는 환경변수나 default-app을 사용했는데, 접속마다 바뀔 수 있어 데이터가 유실된 것처럼 보임
         const appId = 'freecell_rank_v1';
+        const COLLECTION_NAME = 'freecell_best_scores';
         
-        // Use user config explicitly
         const firebaseConfig = userConfig;
         
         let db, auth, user;
+        let unsubscribeLeaderboard = null;
 
         try {
-            console.log("Initializing Firebase...");
+            console.log("Initializing Firebase with fixed AppID:", appId);
             const app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
@@ -273,9 +281,8 @@
                     try {
                         await signInWithCustomToken(auth, __initial_auth_token);
                         signedIn = true;
-                        console.log("Signed in with custom token");
                     } catch (e) {
-                        console.warn("Custom token auth skipped/failed:", e.code);
+                        console.warn("Custom token auth skipped:", e.code);
                     }
                 }
 
@@ -303,40 +310,62 @@
         } catch (e) {
             console.error("Firebase init failed:", e);
             const listEl = document.querySelector("#leaderboard-list");
-            if(listEl) listEl.innerHTML = '<tr><td colspan="3" class="text-center py-4">서비스 연결 불가</td></tr>';
+            if(listEl) listEl.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-red-500">서비스 연결 불가</td></tr>';
         }
+
+        // Expose loadLeaderboard for refresh button
+        window.reloadLeaderboard = () => {
+            const btn = document.getElementById('btn-refresh-rank');
+            if(btn) btn.classList.add('spin'); 
+            
+            loadLeaderboard();
+            
+            setTimeout(() => {
+                if(btn) btn.classList.remove('spin');
+            }, 1000);
+        };
 
         function loadLeaderboard() {
             if (!db) return;
-            const colRef = collection(db, 'artifacts', appId, 'public', 'data', 'freecell_scores');
             
-            onSnapshot(colRef, (snapshot) => {
+            if (unsubscribeLeaderboard) {
+                unsubscribeLeaderboard();
+            }
+
+            const colRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
+            
+            const tbody = document.getElementById('leaderboard-list');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-400">데이터 불러오는 중...</td></tr>';
+
+            unsubscribeLeaderboard = onSnapshot(colRef, (snapshot) => {
                 const scores = [];
                 snapshot.forEach(doc => scores.push(doc.data()));
                 
+                // Sort by duration (Ascending)
                 scores.sort((a, b) => {
                     const getSeconds = (item) => {
                         if (typeof item.duration === 'number') return item.duration;
-                        if (typeof item.time === 'string') {
-                            const parts = item.time.split(':');
-                            if (parts.length === 2) return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-                        }
                         return 999999;
                     };
                     return getSeconds(a) - getSeconds(b);
                 }); 
                 
                 const top10 = scores.slice(0, 10);
-                const tbody = document.getElementById('leaderboard-list');
+                
                 if (tbody) {
                     tbody.innerHTML = '';
 
-                    // Load cached nickname if current one is empty (initial load)
                     const currentName = nickname || localStorage.getItem('freecell_nickname');
+                    const currentUid = auth && auth.currentUser ? auth.currentUser.uid : null;
 
+                    if (top10.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-400">아직 기록이 없습니다.<br>첫 번째 주인공이 되어보세요!</td></tr>';
+                        return;
+                    }
+
+                    // Render Top 10
                     top10.forEach((s, idx) => {
-                        // Highlight if matches current user nickname
-                        const isMe = currentName && s.nickname === currentName;
+                        const isMe = (currentUid && s.uid === currentUid) || (s.nickname === currentName);
                         const rowClass = isMe ? "bg-yellow-100 font-bold border-b border-yellow-200 text-yellow-900" : "border-b border-gray-100 last:border-0 hover:bg-gray-100";
                         
                         const row = `
@@ -349,17 +378,40 @@
                         tbody.innerHTML += row;
                     });
 
-                    if (scores.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-400">기록이 없습니다.</td></tr>';
+                    // Check if I am in Top 10
+                    let myRankIdx = -1;
+                    if (currentUid) {
+                        myRankIdx = scores.findIndex(s => s.uid === currentUid);
+                    } else if (currentName) {
+                        myRankIdx = scores.findIndex(s => s.nickname === currentName);
+                    }
+
+                    // If my rank exists but not in top 10 (idx >= 10)
+                    if (myRankIdx !== -1 && myRankIdx >= 10) {
+                        const myScore = scores[myRankIdx];
+                        
+                        // Separator
+                        tbody.innerHTML += `<tr><td colspan="3" class="text-center py-1 text-gray-400 text-xs tracking-widest">•••</td></tr>`;
+                        
+                        // My Row
+                        const row = `
+                            <tr class="bg-yellow-100 font-bold border-t border-yellow-200 text-yellow-900">
+                                <td class="py-2 pl-2 text-gray-500 font-mono">${myRankIdx + 1}</td>
+                                <td class="py-2 font-medium text-gray-800 truncate max-w-[100px]">${myScore.nickname}</td>
+                                <td class="py-2 text-right pr-2 font-bold text-yellow-700">${myScore.time}</td>
+                            </tr>
+                        `;
+                        tbody.innerHTML += row;
                     }
                 }
             }, (error) => {
                 console.error("Leaderboard error:", error);
+                if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="text-center py-4 text-red-400">불러오기 실패<br><span class="text-xs">${error.code || '권한 오류'}</span></td></tr>`;
             });
         }
 
         async function saveScore(nickname, score, timeStr, duration) {
-            console.log("Saving score:", { nickname, score, timeStr, duration });
+            console.log("Saving score to:", appId);
             
             if (!db) {
                 return { success: false, message: "데이터베이스 연결 실패" };
@@ -375,7 +427,26 @@
             }
 
             try {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'freecell_scores'), {
+                // 1. Reference the specific user document (Unique per UID)
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, auth.currentUser.uid);
+                
+                // 2. Check existing record
+                const docSnap = await getDoc(userDocRef);
+                let isBetter = true;
+
+                if (docSnap.exists()) {
+                    const oldData = docSnap.data();
+                    if (oldData.duration <= duration) {
+                        isBetter = false; // Existing time is faster or equal
+                    }
+                }
+
+                if (!isBetter) {
+                    return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
+                }
+
+                // 3. Save (Overwrite/Create) if better
+                await setDoc(userDocRef, {
                     nickname: nickname,
                     score: score,
                     time: timeStr,
@@ -383,7 +454,8 @@
                     uid: auth.currentUser.uid,
                     createdAt: serverTimestamp()
                 });
-                console.log("Score saved successfully!");
+                
+                console.log("Score saved/updated successfully!");
                 return { success: true };
             } catch (e) {
                 console.error("Save score failed:", e);
@@ -930,19 +1002,23 @@
             document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-semibold text-yellow-300";
 
             if (window.saveGameScore && nickname) {
-                // Calculate duration in seconds for accurate sorting
                 const timeParts = timeStr.split(':');
                 const duration = parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]);
 
                 const result = await window.saveGameScore(nickname, gameState.score, timeStr, duration);
                 
                 if (result && result.success) {
-                    document.getElementById('save-status').innerText = "기록 저장 완료!";
+                    document.getElementById('save-status').innerText = "기록 저장 완료! (최고 기록 갱신)";
                     document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-green-400";
                 } else {
+                    // Distinguish between error and "not best record"
                     document.getElementById('save-status').innerText = result?.message || "저장 실패";
-                    document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-red-400";
-                    document.getElementById('btn-retry-save').classList.remove('hidden');
+                    if (result?.message && result.message.includes("기존 최고 기록")) {
+                        document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-blue-300";
+                    } else {
+                        document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-red-400";
+                        document.getElementById('btn-retry-save').classList.remove('hidden');
+                    }
                 }
             } else {
                 document.getElementById('save-status').innerText = "저장 불가 (닉네임 없음)";
@@ -965,8 +1041,12 @@
                     document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-green-400";
                 } else {
                     document.getElementById('save-status').innerText = result?.message || "저장 실패";
-                    document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-red-400";
-                    document.getElementById('btn-retry-save').classList.remove('hidden');
+                    if (result?.message && result.message.includes("기존 최고 기록")) {
+                        document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-blue-300";
+                    } else {
+                        document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-red-400";
+                        document.getElementById('btn-retry-save').classList.remove('hidden');
+                    }
                 }
             }
         }
