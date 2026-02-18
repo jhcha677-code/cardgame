@@ -250,8 +250,9 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, setDoc, getDoc, doc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, setDoc, getDoc, doc, onSnapshot, serverTimestamp, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
+        // 사용자 제공 설정을 강제 사용하도록 변경
         const userConfig = {
             apiKey: "AIzaSyABtG2uYP6iXpXOphVPTY_roUbHMzBDGek",
             authDomain: "cardgame-8bae4.firebaseapp.com",
@@ -261,19 +262,32 @@
             appId: "1:931605513570:web:8f58953994bda3fdcad83b"
         };
         
-        const appId = 'freecell_rank_v1';
+        // 고정된 리더보드 ID 사용 (저장소 위치 고정)
+        const LEADERBOARD_ID = 'freecell_rank_v1';
+        // Renamed collection to start fresh for "Best Time" logic
         const COLLECTION_NAME = 'freecell_best_scores';
         
+        // Use user config explicitly
         const firebaseConfig = userConfig;
         
         let db, auth, user;
         let unsubscribeLeaderboard = null;
 
         try {
-            console.log("Initializing Firebase with fixed AppID:", appId);
+            console.log("Initializing Firebase with fixed ID:", LEADERBOARD_ID);
             const app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
+
+            // 1. Enable Offline Persistence
+            enableIndexedDbPersistence(db)
+                .catch((err) => {
+                    if (err.code == 'failed-precondition') {
+                        console.warn("Offline persistence failed: Multiple tabs open.");
+                    } else if (err.code == 'unimplemented') {
+                        console.warn("Offline persistence failed: Browser not supported.");
+                    }
+                });
 
             const initAuth = async () => {
                 let signedIn = false;
@@ -333,7 +347,8 @@
                 unsubscribeLeaderboard();
             }
 
-            const colRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
+            // Using new collection name with LEADERBOARD_ID
+            const colRef = collection(db, 'artifacts', LEADERBOARD_ID, 'public', 'data', COLLECTION_NAME);
             
             // Set Loading State
             const tbody = document.getElementById('leaderboard-list');
@@ -383,7 +398,7 @@
                     // Render Top 10
                     let myRankRendered = false;
                     top10.forEach((s, idx) => {
-                        // Check if this row is me (by nickname since we deduplicated by nickname)
+                        // Check if this row is me
                         const isMe = currentName && s.nickname === currentName;
                         if (isMe) myRankRendered = true;
 
@@ -427,8 +442,20 @@
         }
 
         async function saveScore(nickname, score, timeStr, duration) {
-            console.log("Saving score to:", appId);
+            console.log("Saving score to:", LEADERBOARD_ID);
             
+            // 1. Check LocalStorage Cache first (Instant Feedback)
+            const cachedBest = localStorage.getItem('freecell_best_duration');
+            if (cachedBest) {
+                const bestDuration = parseInt(cachedBest);
+                if (bestDuration <= duration) {
+                     return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
+                }
+            }
+
+            // 2. Optimistically save to LocalStorage
+            localStorage.setItem('freecell_best_duration', duration);
+
             if (!db) {
                 return { success: false, message: "데이터베이스 연결 실패" };
             }
@@ -444,24 +471,22 @@
 
             try {
                 // 1. Reference the specific user document (Unique per UID)
-                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME, auth.currentUser.uid);
+                const userDocRef = doc(db, 'artifacts', LEADERBOARD_ID, 'public', 'data', COLLECTION_NAME, auth.currentUser.uid);
                 
-                // 2. Check existing record
-                const docSnap = await getDoc(userDocRef);
-                let isBetter = true;
-
-                if (docSnap.exists()) {
-                    const oldData = docSnap.data();
-                    if (oldData.duration <= duration) {
-                        isBetter = false; // Existing time is faster or equal
+                // 2. Check existing record from server (optional, handled by optimistic check mostly)
+                try {
+                    const docSnap = await getDoc(userDocRef);
+                    if (docSnap.exists()) {
+                        const oldData = docSnap.data();
+                        if (oldData.duration <= duration) {
+                            return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
+                        }
                     }
+                } catch (readError) {
+                    console.warn("Could not read previous score, overwriting...", readError);
                 }
 
-                if (!isBetter) {
-                    return { success: false, message: "아쉽네요! 기존 최고 기록이 더 빠릅니다." };
-                }
-
-                // 3. Save (Overwrite/Create) if better
+                // 3. Save (Overwrite/Create)
                 await setDoc(userDocRef, {
                     nickname: nickname,
                     score: score,
@@ -1018,6 +1043,7 @@
             document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-semibold text-yellow-300";
 
             if (window.saveGameScore && nickname) {
+                // Calculate duration in seconds for accurate sorting
                 const timeParts = timeStr.split(':');
                 const duration = parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]);
 
