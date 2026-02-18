@@ -328,29 +328,46 @@
         function loadLeaderboard() {
             if (!db) return;
             
+            // Clean up previous listener
             if (unsubscribeLeaderboard) {
                 unsubscribeLeaderboard();
             }
 
             const colRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_NAME);
             
+            // Set Loading State
             const tbody = document.getElementById('leaderboard-list');
             if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-400">데이터 불러오는 중...</td></tr>';
 
             unsubscribeLeaderboard = onSnapshot(colRef, (snapshot) => {
-                const scores = [];
-                snapshot.forEach(doc => scores.push(doc.data()));
+                const rawScores = [];
+                snapshot.forEach(doc => rawScores.push(doc.data()));
                 
-                // Sort by duration (Ascending)
-                scores.sort((a, b) => {
-                    const getSeconds = (item) => {
-                        if (typeof item.duration === 'number') return item.duration;
-                        return 999999;
-                    };
-                    return getSeconds(a) - getSeconds(b);
-                }); 
+                // 1. Sort by duration (Ascending: Faster is better)
+                // Helper to get seconds safely
+                const getSeconds = (item) => {
+                    if (typeof item.duration === 'number') return item.duration;
+                    if (typeof item.time === 'string') {
+                        const parts = item.time.split(':');
+                        if (parts.length === 2) return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                    }
+                    return 999999;
+                };
                 
-                const top10 = scores.slice(0, 10);
+                rawScores.sort((a, b) => getSeconds(a) - getSeconds(b)); 
+
+                // 2. Filter Duplicates: Keep only the best (first) record per nickname
+                const uniqueScores = [];
+                const seenNicknames = new Set();
+                
+                rawScores.forEach(score => {
+                    if (!seenNicknames.has(score.nickname)) {
+                        seenNicknames.add(score.nickname);
+                        uniqueScores.push(score);
+                    }
+                });
+                
+                const top10 = uniqueScores.slice(0, 10);
                 
                 if (tbody) {
                     tbody.innerHTML = '';
@@ -364,8 +381,12 @@
                     }
 
                     // Render Top 10
+                    let myRankRendered = false;
                     top10.forEach((s, idx) => {
-                        const isMe = (currentUid && s.uid === currentUid) || (s.nickname === currentName);
+                        // Check if this row is me (by nickname since we deduplicated by nickname)
+                        const isMe = currentName && s.nickname === currentName;
+                        if (isMe) myRankRendered = true;
+
                         const rowClass = isMe ? "bg-yellow-100 font-bold border-b border-yellow-200 text-yellow-900" : "border-b border-gray-100 last:border-0 hover:bg-gray-100";
                         
                         const row = `
@@ -378,30 +399,25 @@
                         tbody.innerHTML += row;
                     });
 
-                    // Check if I am in Top 10
-                    let myRankIdx = -1;
-                    if (currentUid) {
-                        myRankIdx = scores.findIndex(s => s.uid === currentUid);
-                    } else if (currentName) {
-                        myRankIdx = scores.findIndex(s => s.nickname === currentName);
-                    }
-
-                    // If my rank exists but not in top 10 (idx >= 10)
-                    if (myRankIdx !== -1 && myRankIdx >= 10) {
-                        const myScore = scores[myRankIdx];
+                    // 3. If I am not in Top 10 list, find my best rank and show at bottom
+                    if (!myRankRendered && currentName) {
+                        // Find my best record in the unique sorted list
+                        const myRankIdx = uniqueScores.findIndex(s => s.nickname === currentName);
                         
-                        // Separator
-                        tbody.innerHTML += `<tr><td colspan="3" class="text-center py-1 text-gray-400 text-xs tracking-widest">•••</td></tr>`;
-                        
-                        // My Row
-                        const row = `
-                            <tr class="bg-yellow-100 font-bold border-t border-yellow-200 text-yellow-900">
-                                <td class="py-2 pl-2 text-gray-500 font-mono">${myRankIdx + 1}</td>
-                                <td class="py-2 font-medium text-gray-800 truncate max-w-[100px]">${myScore.nickname}</td>
-                                <td class="py-2 text-right pr-2 font-bold text-yellow-700">${myScore.time}</td>
-                            </tr>
-                        `;
-                        tbody.innerHTML += row;
+                        if (myRankIdx !== -1) {
+                            const myScore = uniqueScores[myRankIdx];
+                            // Separator
+                            tbody.innerHTML += `<tr><td colspan="3" class="text-center py-1 text-gray-400 text-xs tracking-widest">•••</td></tr>`;
+                            // My Row
+                            const row = `
+                                <tr class="bg-yellow-100 font-bold border-t border-yellow-200 text-yellow-900">
+                                    <td class="py-2 pl-2 text-gray-500 font-mono">${myRankIdx + 1}</td>
+                                    <td class="py-2 font-medium text-gray-800 truncate max-w-[100px]">${myScore.nickname}</td>
+                                    <td class="py-2 text-right pr-2 font-bold text-yellow-700">${myScore.time}</td>
+                                </tr>
+                            `;
+                            tbody.innerHTML += row;
+                        }
                     }
                 }
             }, (error) => {
