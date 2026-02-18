@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Classic FreeCell</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -21,6 +21,7 @@
             width: 100%;
             height: 100%;
             background-color: #166534; /* Green-800 fallback */
+            padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
         }
         
         /* Card Styles */
@@ -32,10 +33,10 @@
             border-radius: 0.3rem;
             box-shadow: 1px 1px 3px rgba(0,0,0,0.3);
             position: absolute;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s, top 0.2s ease; /* Added transition for smooth spacing adjustment */
             cursor: pointer;
             border: 0; 
-            touch-action: none; /* Crucial for touch handling */
+            touch-action: none; 
         }
         
         .card.selected {
@@ -163,7 +164,7 @@
                                 <tr>
                                     <th class="text-left py-1">순위</th>
                                     <th class="text-left py-1">이름</th>
-                                    <th class="text-right py-1">점수</th>
+                                    <th class="text-right py-1">시간</th>
                                 </tr>
                             </thead>
                             <tbody id="leaderboard-list">
@@ -242,7 +243,6 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 사용자 제공 설정을 백업용으로 유지
         const userConfig = {
             apiKey: "AIzaSyABtG2uYP6iXpXOphVPTY_roUbHMzBDGek",
             authDomain: "cardgame-8bae4.firebaseapp.com",
@@ -253,11 +253,7 @@
         };
         
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
-        
-        // 환경 변수 설정 우선 사용, 없으면 사용자 설정 사용 (Auth 오류 방지)
-        const firebaseConfig = (typeof __firebase_config !== 'undefined' && __firebase_config) 
-            ? JSON.parse(__firebase_config) 
-            : userConfig;
+        const firebaseConfig = userConfig;
         
         let db, auth, user;
 
@@ -268,16 +264,25 @@
             db = getFirestore(app);
 
             const initAuth = async () => {
-                try {
-                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                let signedIn = false;
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
                         await signInWithCustomToken(auth, __initial_auth_token);
-                    } else {
-                        await signInAnonymously(auth);
+                        signedIn = true;
+                        console.log("Signed in with custom token");
+                    } catch (e) {
+                        console.warn("Custom token auth skipped/failed:", e.code);
                     }
-                } catch (e) {
-                    console.error("Auth initialization failed:", e);
-                    // UI에 에러 알림 (선택적)
-                    if (window.showToast) window.showToast("인증 서버 연결 실패: 콘솔 설정을 확인하세요.");
+                }
+
+                if (!signedIn) {
+                    try {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously");
+                    } catch (e) {
+                        console.error("Anonymous auth failed:", e);
+                        if (window.showToast) window.showToast("인증 서버 연결 실패: 콘솔 설정을 확인하세요.");
+                    }
                 }
             };
             initAuth();
@@ -304,26 +309,33 @@
             onSnapshot(colRef, (snapshot) => {
                 const scores = [];
                 snapshot.forEach(doc => scores.push(doc.data()));
-                scores.sort((a, b) => b.score - a.score); 
+                
+                scores.sort((a, b) => {
+                    const getSeconds = (item) => {
+                        if (typeof item.duration === 'number') return item.duration;
+                        if (typeof item.time === 'string') {
+                            const parts = item.time.split(':');
+                            if (parts.length === 2) return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+                        }
+                        return 999999;
+                    };
+                    return getSeconds(a) - getSeconds(b);
+                }); 
                 
                 const top10 = scores.slice(0, 10);
                 const tbody = document.getElementById('leaderboard-list');
                 if (tbody) {
                     tbody.innerHTML = '';
-
-                    // Load cached nickname if current one is empty (initial load)
                     const currentName = nickname || localStorage.getItem('freecell_nickname');
 
                     top10.forEach((s, idx) => {
-                        // Highlight if matches current user nickname
                         const isMe = currentName && s.nickname === currentName;
                         const rowClass = isMe ? "bg-yellow-100 font-bold border-b border-yellow-200 text-yellow-900" : "border-b border-gray-100 last:border-0 hover:bg-gray-100";
-                        
                         const row = `
                             <tr class="${rowClass}">
                                 <td class="py-2 pl-2 text-gray-500 font-mono">${idx + 1}</td>
                                 <td class="py-2 font-medium text-gray-800 truncate max-w-[100px]">${s.nickname}</td>
-                                <td class="py-2 text-right pr-2 font-bold ${isMe ? 'text-yellow-700' : 'text-green-700'}">${s.score}</td>
+                                <td class="py-2 text-right pr-2 font-bold ${isMe ? 'text-yellow-700' : 'text-green-700'}">${s.time}</td>
                             </tr>
                         `;
                         tbody.innerHTML += row;
@@ -338,14 +350,13 @@
             });
         }
 
-        async function saveScore(nickname, score, timeStr) {
-            console.log("Saving score:", { nickname, score, timeStr });
+        async function saveScore(nickname, score, timeStr, duration) {
+            console.log("Saving score:", { nickname, score, timeStr, duration });
             
             if (!db) {
                 return { success: false, message: "데이터베이스 연결 실패" };
             }
 
-            // Ensure we have a valid user before saving
             if (!auth.currentUser) {
                 try {
                     await signInAnonymously(auth);
@@ -360,6 +371,7 @@
                     nickname: nickname,
                     score: score,
                     time: timeStr,
+                    duration: duration,
                     uid: auth.currentUser.uid,
                     createdAt: serverTimestamp()
                 });
@@ -405,7 +417,6 @@
             }, 2000);
         }
         
-        // Expose showToast to window so the module script can use it
         window.showToast = showToast;
 
         document.addEventListener('DOMContentLoaded', () => {
@@ -416,11 +427,10 @@
             document.getElementById('btn-victory-home').addEventListener('click', exitGame);
             document.getElementById('btn-retry-save').addEventListener('click', retrySaveScore);
             
-            // Load nickname from storage on load
             const savedName = localStorage.getItem('freecell_nickname');
             if (savedName) {
-                document.getElementById('nickname-input').value = savedName;
-                // Update nickname variable so highlight works immediately if we have a match
+                const inputEl = document.getElementById('nickname-input');
+                if (inputEl) inputEl.value = savedName;
                 nickname = savedName; 
             }
 
@@ -467,6 +477,43 @@
             }, { passive: false });
         }
 
+        // --- NEW: Dynamic Card Spacing Calculation ---
+        function calculateTableauOffset() {
+            const tableauArea = document.getElementById('tableau-area');
+            const boardHeight = tableauArea.clientHeight;
+            
+            // Standard spacing we want
+            const standardOffset = 26; // Reduced from 35 to fit more
+            
+            // Card height is implicitly defined by width/aspect-ratio.
+            // We need to approximate it to prevent overflow.
+            // Width is 12.5% of board width * 0.9.
+            // Aspect ratio 5/7 means Height = Width * 1.4.
+            const colWidth = tableauArea.clientWidth / 8;
+            const cardWidth = colWidth * 0.9;
+            const cardHeight = cardWidth * 1.4;
+
+            // Find the maximum number of cards in any column
+            let maxCards = 0;
+            gameState.tableaus.forEach(col => {
+                if (col.length > maxCards) maxCards = col.length;
+            });
+
+            // Calculate height required with standard offset
+            const requiredHeight = (maxCards - 1) * standardOffset + cardHeight;
+
+            // If it doesn't fit, shrink offset
+            if (requiredHeight > boardHeight && maxCards > 1) {
+                // formula: (maxCards - 1) * offset + cardHeight = boardHeight
+                // offset = (boardHeight - cardHeight) / (maxCards - 1)
+                // Add a small buffer (-10px) to not touch edge perfectly
+                let compressedOffset = (boardHeight - cardHeight - 10) / (maxCards - 1);
+                return Math.max(compressedOffset, 8); // Minimum visible offset (e.g. 8px)
+            }
+
+            return standardOffset;
+        }
+
         function resizeCards() { updateUI(); }
 
         function startGame() {
@@ -479,10 +526,7 @@
             }
             errorMsg.classList.add('hidden');
             nickname = input.value.trim();
-            
-            // Save nickname for next time
             localStorage.setItem('freecell_nickname', nickname);
-
             document.getElementById('user-display').innerText = nickname;
             document.getElementById('start-screen').classList.add('hidden');
             document.getElementById('victory-screen').classList.add('hidden');
@@ -543,8 +587,6 @@
             `;
         }
 
-        function getTableauOffset(index) { return 20; }
-
         function updateUI() {
             gameState.freecells.forEach((card, i) => {
                 const el = document.getElementById(`freecell-${i}`);
@@ -567,7 +609,9 @@
                 }
             });
 
-            const offset = getTableauOffset();
+            // Use dynamic offset calculation for responsiveness
+            const offset = calculateTableauOffset();
+            
             gameState.tableaus.forEach((col, i) => {
                 const el = document.getElementById(`tableau-${i}`);
                 el.innerHTML = ''; 
@@ -611,13 +655,10 @@
                 selectSource(type, index, cardIndex);
             } 
             else if (selectedCard.type === type && selectedCard.index === index) {
-                // If clicked the same selected card/stack:
-                // Try to move to foundation (Simulate "Double Click" / "Smart Click")
                 let cardToMove = null;
                 if (type === 'freecell') {
                     cardToMove = gameState.freecells[index];
                 } else if (type === 'tableau') {
-                    // Only if it's the single top card of selection
                     if (selectedCard.cards.length === 1) {
                         const col = gameState.tableaus[index];
                         if (col.length > 0) cardToMove = col[col.length - 1];
@@ -625,7 +666,6 @@
                 }
 
                 if (cardToMove && moveCardToFoundation(cardToMove, type, index)) {
-                    // Success: Clear selection and check for chains
                     selectedCard = null;
                     updateUI();
                     if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
@@ -633,7 +673,6 @@
                     return;
                 }
 
-                // If not moved, just toggle selection off
                 selectedCard = null;
                 updateUI();
             }
@@ -741,11 +780,8 @@
             } 
             else if (destType === 'foundation') {
                 if (movingCards.length === 1) {
-                    // Try using the helper logic
                     if (moveCardToFoundation(movingCards[0], selectedCard.type, selectedCard.index)) {
                         success = true;
-                        // Note: moveCardToFoundation handles the state update and score
-                        // We just need to handle UI update and return
                         selectedCard = null;
                         updateUI();
                         if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
@@ -787,8 +823,6 @@
                 gameState.score += movePoints;
                 selectedCard = null;
                 updateUI();
-                
-                // Trigger auto-complete check
                 if (autoMoveTimeout) clearTimeout(autoMoveTimeout);
                 autoMoveTimeout = setTimeout(checkAutoMoves, 200);
             } else {
@@ -810,7 +844,6 @@
         function checkAutoMoves() {
             let moved = false;
             
-            // Helper: Find min value of opposite color foundations
             let minBlack = 14, minRed = 14;
             let blackRanks = [], redRanks = [];
             gameState.foundations.forEach(pile => {
@@ -828,7 +861,6 @@
                 minRed: Math.min(...redRanks) 
             };
 
-            // Check Freecells
             for (let i = 0; i < 4; i++) {
                 if (gameState.freecells[i]) {
                     if (tryAutoMove(gameState.freecells[i], 'freecell', i, limits)) {
@@ -838,7 +870,6 @@
                 }
             }
 
-            // Check Tableaus
             if (!moved) {
                 for (let i = 0; i < 8; i++) {
                     const col = gameState.tableaus[i];
@@ -885,13 +916,15 @@
             document.getElementById('final-time').innerText = timeStr;
             document.getElementById('victory-screen').classList.remove('hidden');
             
-            // Hide retry button initially
             document.getElementById('btn-retry-save').classList.add('hidden');
             document.getElementById('save-status').innerText = "기록 저장 중...";
             document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-semibold text-yellow-300";
 
             if (window.saveGameScore && nickname) {
-                const result = await window.saveGameScore(nickname, gameState.score, timeStr);
+                const timeParts = timeStr.split(':');
+                const duration = parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]);
+
+                const result = await window.saveGameScore(nickname, gameState.score, timeStr, duration);
                 
                 if (result && result.success) {
                     document.getElementById('save-status').innerText = "기록 저장 완료!";
@@ -913,7 +946,10 @@
             document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-semibold text-yellow-300";
             
             if (window.saveGameScore && nickname) {
-                const result = await window.saveGameScore(nickname, gameState.score, timeStr);
+                const timeParts = timeStr.split(':');
+                const duration = parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]);
+
+                const result = await window.saveGameScore(nickname, gameState.score, timeStr, duration);
                 if (result && result.success) {
                     document.getElementById('save-status').innerText = "기록 저장 완료!";
                     document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-bold text-green-400";
