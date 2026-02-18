@@ -252,7 +252,11 @@
             appId: "1:931605513570:web:8f58953994bda3fdcad83b"
         };
         
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app';
+        // 중요: appId를 고정된 값으로 변경하여 항상 같은 컬렉션을 바라보게 함
+        // 기존에는 환경변수나 default-app을 사용했는데, 접속마다 바뀔 수 있어 데이터가 유실된 것처럼 보임
+        const appId = 'freecell_rank_v1';
+        
+        // Use user config explicitly
         const firebaseConfig = userConfig;
         
         let db, auth, user;
@@ -326,11 +330,15 @@
                 const tbody = document.getElementById('leaderboard-list');
                 if (tbody) {
                     tbody.innerHTML = '';
+
+                    // Load cached nickname if current one is empty (initial load)
                     const currentName = nickname || localStorage.getItem('freecell_nickname');
 
                     top10.forEach((s, idx) => {
+                        // Highlight if matches current user nickname
                         const isMe = currentName && s.nickname === currentName;
                         const rowClass = isMe ? "bg-yellow-100 font-bold border-b border-yellow-200 text-yellow-900" : "border-b border-gray-100 last:border-0 hover:bg-gray-100";
+                        
                         const row = `
                             <tr class="${rowClass}">
                                 <td class="py-2 pl-2 text-gray-500 font-mono">${idx + 1}</td>
@@ -916,11 +924,13 @@
             document.getElementById('final-time').innerText = timeStr;
             document.getElementById('victory-screen').classList.remove('hidden');
             
+            // Hide retry button initially
             document.getElementById('btn-retry-save').classList.add('hidden');
             document.getElementById('save-status').innerText = "기록 저장 중...";
             document.getElementById('save-status').className = "text-sm min-h-[1.5rem] mb-4 font-semibold text-yellow-300";
 
             if (window.saveGameScore && nickname) {
+                // Calculate duration in seconds for accurate sorting
                 const timeParts = timeStr.split(':');
                 const duration = parseInt(timeParts[0]) * 60 + parseInt(timeParts[1]);
 
